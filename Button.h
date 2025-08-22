@@ -1,82 +1,115 @@
-#ifndef _BUTTON_H
-#define _BUTTON_H
+#pragma once
 
-    #include <iostream>
-    #include <bcm2835.h>
-    #include <pigpio.h>                                 // For GPIO configuration            
-    #include <chrono>                                   // For time management
-    #include <thread>
-    #include <mutex>
+// #################################################################################
+// Include libraries:
 
-    using namespace std;
+#include <cstdint>
+#include <string>
+#include <atomic>
+#include <thread>
+#include <chrono>
+#include <functional>
+#include "../AUXIO_Linux/AUXIO.h"    // <- Your AUXIO input wrapper (AUXI)
 
-    class Button
-    {
-        public:
+using namespace std;
 
-            std::string errorMessage;
-            
-            /*
-                BUTTUN object constructor. Set button pin and its input mode. Not apply setting.
-                Hint: begin() method needs after this for apply setting on hardware.
-                pud: Pullup/Pulldown. PUD_OFF:0, PUD_DOWN:1, PUD_UP:2 
-            */
-            Button(uint8_t pin, uint8_t pud);
+// #################################################################################
 
-            /*
-                Apply setting on hardware. Start BUTTON action.
-                @return true if successed.
-            */
-            bool begin(void);
+// Callback signature: (is_rising, seconds, nanoseconds)
+using GpioCallback = void(*)(bool, long, long);
 
-            /*
-                Clean setting on hardware. Stop  BUTTON action. 
-            */
-            void clean(void);
+// #################################################################################
+// Button class:
 
-            /*
-                Return Button digital input value.
-            */
-            uint8_t value(void);
+/**
+* @brief Simple button wrapper on top of AUXIO (AUXI input with optional interrupts).
+*
+* API kept close to the original Button class, but internally uses AUXI.
+* - Pull modes use the same numeric convention as before: OFF=0, DOWN=1, UP=2.
+* - beginInterrupt() is added for edge-driven behavior with optional debounce.
+*/
+class Button
+{
+    public:
 
-            /*
-                Return Button pressed state. pressed:1, not pressed:0
-            */
-            uint8_t state(void);
+        std::string errorMessage;
+        
+        /**
+        * @param pin GPIO line offset (per your platform's mapping)
+        * @param pud Pull mode: 0=OFF, 1=DOWN, 2=UP
+        */
+        Button(uint8_t pin, uint8_t pud);
 
-        protected:
+        /**
+        * @brief Configure the GPIO as input with bias via AUXI. No interrupts.
+        * @return true on success, false on error (check errorMessage)
+        */
+        bool begin(void);
 
-            // GPIO pin number
-            uint8_t _pin;
-            
-            // Pullup/Pulldown mode. PUD_OFF:0, PUD_DOWN:1, PUD_UP:2 
-            uint8_t _pud;
+        /**
+        * @brief Start edge-driven interrupts (rising+falling by default).
+        * @param cb C-style callback (no lambda required)
+        * @param both_edges true=rising+falling, false=rising-only
+        * @param debounce_us debounce time in microseconds (0 to disable)
+        * @return true on success
+        */
+        bool beginInterrupt(GpioCallback cb, bool both_edges=true, uint32_t debounce_us=5000);
 
-            // Duration time that user pressed button. [us]
-            uint64_t _pressedDur;
+        /** Stop interrupts (if started) and release resources. */
+        void clean(void);
 
-            uint64_t _T;
+        /** @return raw logic level from the line (0/1). */
+        uint8_t value(void);
 
-            /*
-                external interrupts handle function.
-                When Button trigged, this function execute.
-            */ 
-            void _InterruptHandler(int /*gpio*/, int /*level*/, uint32_t /*tick*/); 
-    };
+        /**
+        * @brief Button pressed state considering pull mode.
+        * If pull-up is used (2), pressed = level==0.
+        * Otherwise, pressed = level.
+        */
+        uint8_t state(void);
 
-    class ResetButton : public Button
-    {
-        public:
-            /*
-            BUTTUN object constructor. Set button pin and its input mode. Not apply setting.
-            Hint: begin() method needs after this for apply setting on hardware.
-            pud: Pullup/Pulldown. PUD_OFF:0, PUD_DOWN:1, PUD_UP:2 
-            */
-            ResetButton(uint8_t pin, uint8_t pud) : Button(pin, pud) {};
+    protected:
 
-            // Check reset button for shutdown or reboot system.
-            bool check(void);
+        // GPIO pin number
+        uint8_t _pin;
+        
+        // Pullup/Pulldown mode. PUD_OFF:0, PUD_DOWN:1, PUD_UP:2 
+        uint8_t _pud;
 
-    };
+        // Backing AUXI input object (from AUXIO library)
+        AUXI _auxi; // constructed with pin; see source for details
 
-#endif
+        // Track whether interrupt mode is active
+        std::atomic<bool> _irqActive {false};
+
+        // // Duration time that user pressed button. [us]
+        // uint64_t _pressedDur;
+
+        // uint64_t _T;
+};
+
+// ################################################################################
+// ResetButton class:
+
+/**
+* @brief Specialized button that triggers reboot/shutdown after a press/hold.
+* Behavior preserved from original code but implemented without bcm delays.
+*/
+class ResetButton : public Button
+{
+    public:
+
+        using Button::Button; // inherit constructor
+
+        /**
+        * @brief If pressed, perform reboot; if still pressed after countdown, shutdown.
+        * Blocks while counting down.
+        */
+        bool check(void);
+
+};
+
+
+
+
+
