@@ -3,13 +3,13 @@
 // #################################################################################
 // Include libraries:
 
+#include "../AUXIO_Linux/AUXIO.h"    // <- Your AUXIO input wrapper (AUXI)
 #include <cstdint>
 #include <string>
 #include <atomic>
 #include <thread>
 #include <chrono>
 #include <functional>
-#include "../AUXIO_Linux/AUXIO.h"    // <- Your AUXIO input wrapper (AUXI)
 
 using namespace std;
 
