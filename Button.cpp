@@ -82,17 +82,17 @@ void Button::clean()
 
 int Button::value()
 {
-    return _auxi.value();
+    return _auxi.value();   // RAW electrical level: 0/1 or -1 on error
 }
 
 bool Button::read(void)
 {
-    return _auxi.read();
+    return _auxi.read();    // LOGICAL, polarity-applied
 }
 
 bool Button::get(void)
 {
-    return _auxi.get();
+    return _auxi.get(); // cached LOGICAL
 }
 
 // ####################################################################

@@ -1,39 +1,61 @@
-# Button Library (AUXIO-based)
+# Button_Linux — Push-Button Wrapper (AUXIO backend)
 
-A simple C++ library for handling push-buttons on Linux SBCs (e.g., Raspberry Pi, BeagleBone) using the **AUXIO** backend (libgpiod-based).  
-This library replaces older implementations that relied on **bcm2835** or **pigpio**.
+A small C++ library for handling push-buttons on Linux SBCs (Raspberry Pi, BeagleBone, x86)  
+built on top of the **AUXIO** GPIO library (libgpiod v1.x).
 
----
-
-## Features
-
-- Configure a GPIO pin as a button input with optional pull-up/pull-down bias.
-- Poll the button state (`pressed` / `not pressed`).
-- Edge-driven **interrupt callbacks** with optional debounce.
-- Includes a `ResetButton` class that reboots or shuts down the system after a press/hold.
+This library lets you:
+- Configure a GPIO line as a button input with **bias** (pull-up, pull-down, or none).
+- Handle **polarity** automatically (active-high or active-low).
+- Read the button state by polling or cached value.
+- Use **interrupts** (rising, falling, or both edges) with optional debounce.
+- Use the included `ResetButton` class to reboot or shut down the system when pressed/held.
 
 ---
 
-## Requirements
+## ✨ Features
 
-- C++17 or newer
-- [libgpiod](https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git) (v1.6+ recommended)
-- AUXIO library (your wrapper around libgpiod — provides `AUXI` class)
+- Simple wrapper over `AUXI` (input) from AUXIO.
+- Supports bias: `0=off`, `1=pull-down`, `2=pull-up`.
+- Supports polarity: `1=active-high`, `0=active-low`.
+- Polling methods:
+  - `value()` → raw electrical level (0/1/−1)
+  - `read()` → logical pressed state (bool)
+  - `get()`  → cached logical state (bool)
+- Interrupt methods:
+  - Rising, falling, or both edges
+  - Software debounce (µs resolution)
+  - C-style callback with kernel timestamp
+- `ResetButton` utility:
+  - Press → reboot
+  - Hold through countdown → shutdown
 
 ---
 
-## Build
+## 📦 Requirements
+
+- Linux with `/dev/gpiochipN` character devices
+- **libgpiod v1.x** (≥1.6 recommended)  
+  ```bash
+  sudo apt install libgpiod-dev gpiod
+  ```
+- C++17 compiler
+- AUXIO library (`AUXIO.h`, `AUXIO.cpp`)
+
+---
+
+## 🔧 Build
 
 ```bash
-g++ -std=c++17 -O2 -lpthread -lgpiod -o button_demo \
-    button_demo.cpp Button.cpp AUXIO.cpp
-````
+g++ -std=c++17 -O2 -lpthread -lgpiod     -o button_demo Button.cpp AUXIO.cpp button_demo.cpp
+```
+
+Run with root privileges or after configuring udev rules for GPIO.
 
 ---
 
-## Usage Example
+## 🚀 Usage Examples
 
-### Polling a Button
+### Polling
 
 ```cpp
 #include "Button.h"
@@ -41,7 +63,8 @@ g++ -std=c++17 -O2 -lpthread -lgpiod -o button_demo \
 #include <thread>
 
 int main() {
-    Button btn(17, 2); // GPIO17, pull-up
+    // active-low with pull-up
+    Button btn("/dev/gpiochip0", 17, /*mode=*/0, /*bias=*/2);
 
     if (!btn.begin()) {
         std::cerr << "Error: " << btn.errorMessage << "\n";
@@ -49,40 +72,41 @@ int main() {
     }
 
     while (true) {
-        if (btn.state()) {
-            std::cout << "Button pressed!\n";
+        if (btn.read()) {
+            std::cout << "Pressed!\n";
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 }
 ```
 
-### Interrupt-driven Callback
+### Interrupts
 
 ```cpp
 #include "Button.h"
-#include <iostream>
-#include <csignal>
 #include <atomic>
+#include <csignal>
+#include <iostream>
 
 std::atomic<bool> running{true};
+void on_sigint(int){ running.store(false); }
 
-void handler(bool rising, long sec, long nsec) {
+// Edge callback
+void my_cb(bool rising, long sec, long nsec) {
     std::cout << (rising ? "Rising" : "Falling")
-              << " edge at " << sec << "." << nsec << "\n";
+              << " at " << sec << "." << nsec << "\n";
 }
 
 int main() {
-    std::signal(SIGINT, [](int){ running = false; });
+    Button btn("/dev/gpiochip0", 17, /*mode=*/0, /*bias=*/2);
 
-    Button btn(17, 2); // GPIO17, pull-up
-    if (!btn.beginInterrupt(handler, true, 5000)) {
+    if (!btn.beginInterrupt(0, 5000, my_cb)) { // 0=Both edges
         std::cerr << "Error: " << btn.errorMessage << "\n";
         return 1;
     }
 
-    std::cout << "Waiting for button events...\n";
-    while (running) {
+    std::signal(SIGINT, on_sigint);
+    while (running.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
@@ -90,56 +114,49 @@ int main() {
 }
 ```
 
-### ResetButton Example
+### ResetButton
 
 ```cpp
 #include "Button.h"
 
 int main() {
-    ResetButton rstBtn(17, 2); // GPIO17, pull-up
-    rstBtn.begin();
+    ResetButton rst("/dev/gpiochip0", 17, /*mode=*/0, /*bias=*/2);
+    rst.begin();
 
     while (true) {
-        rstBtn.check(); // Press = reboot, Hold = shutdown
+        rst.check(); // Press = reboot, Hold = shutdown
     }
 }
 ```
 
 ---
 
-## API Overview
+## 🔍 API Overview
 
 ### `class Button`
-
-* `Button(uint8_t pin, uint8_t pud)`
-  Create a button object. `pud`: 0=OFF, 1=DOWN, 2=UP.
-* `bool begin()`
-  Configure pin as input with bias.
-* `bool beginInterrupt(GpioCallback cb, bool both_edges=true, uint32_t debounce_us=5000)`
-  Start edge-detection with callback.
-* `void clean()`
-  Release resources.
-* `uint8_t value()`
-  Get raw logic level (0/1).
-* `uint8_t state()`
-  Get button state (pressed = 1, released = 0).
+- `Button(const char* chip, unsigned pin, uint8_t mode=1, uint8_t bias=0)`
+- `bool begin()`
+- `bool beginInterrupt(uint8_t edge=0, uint32_t debounce_us=5000, GpioCallback cb=nullptr)`
+- `void stopInterrupt()`
+- `void clean()`
+- `int value()` → raw line value (0/1/−1)
+- `bool read()` → logical pressed (polarity applied)
+- `bool get()` → cached logical pressed
 
 ### `class ResetButton : public Button`
-
-* `bool check()`
-  If pressed → reboot. If held through countdown → shutdown.
+- `bool check()` — reboot or shutdown depending on hold duration
 
 ---
 
-## Notes
+## ⚠️ Notes
 
-* Requires running with proper permissions to access `/dev/gpiochipN`.
-* Shutdown/reboot functions require **sudo** privileges.
-* Adjust GPIO pin numbering according to your platform.
+- `value()` is raw (no polarity). Use `read()`/`get()` for logical “pressed”.
+- Shutdown/reboot requires appropriate privileges.
+- Ensure correct GPIO numbering (`gpioinfo` shows offsets).
+- For libgpiod v2.x you will need to port this library.
 
 ---
 
-## License
+## 📜 License
 
 MIT License
-

@@ -6,10 +6,13 @@
  *  - Simple configuration of a GPIO input line via AUXI
  *  - Polarity control (mode: active-high/active-low)
  *  - Bias control (bias: off / pull-down / pull-up)
- *  - Polling reads: @ref value() (0/1), @ref read() (bool), @ref get() (cached bool)
+ *  - Polling & cached reads:
+ *      - value() -> RAW line level (0/1/-1)
+ *      - read()  -> LOGICAL (polarity-applied) boolean
+ *      - get()   -> cached LOGICAL boolean (no hardware access)
  *  - Event-driven interrupts with software debounce and a C-style callback
  *
- * A specialized @ref ResetButton is also provided that triggers reboot or shutdown
+ * A specialized ResetButton is also provided that triggers reboot or shutdown
  * depending on how long the button is held.
  */
 
@@ -53,8 +56,8 @@ using GpioCallback = void(*)(bool is_rising, long sec, long nsec);
  * - 1 = pull-down
  * - 2 = pull-up
  *
- * The logical state exposed by @ref read() / @ref get() already applies polarity.
- * Therefore, @ref value() returns 1 when the button is logically active (pressed), 0 otherwise.
+ * The logical state exposed by read()/get() already applies polarity.
+ * `value()` returns the RAW (non-inverted) digital level from the line.
  */
 class Button
 {
@@ -90,7 +93,7 @@ class Button
          * @param edge         0=Both edges, 1=Rising only, 2=Falling only.
          * @param debounce_us  Debounce window in microseconds (default 5000).
          * @param cb           C-style callback pointer (must not be null).
-         * @return true on success, false on error (see @ref errorMessage).
+         * @return true on success, false on error (see errorMessage).
          */
         bool beginInterrupt(uint8_t edge = 0, uint32_t debounce_us = 5000, GpioCallback cb = nullptr);
 
@@ -100,7 +103,7 @@ class Button
          * @param edge         Edge selection (AUXI::Edge::Both/Rising/Falling).
          * @param debounce_us  Debounce window in microseconds.
          * @param cb           C-style callback pointer (must not be null).
-         * @return true on success, false on error (see @ref errorMessage).
+         * @return true on success, false on error (see errorMessage).
          */
         bool beginInterrupt(AUXI::Edge edge, uint32_t debounce_us, GpioCallback cb);
 
@@ -117,21 +120,20 @@ class Button
         void clean(void);
 
         /**
-         * @brief Return the current sampled value of the line.
-         *
+         * @brief Read current RAW digital level from the line.
          * @return 1 if high, 0 if low, or -1 on error.
-         * @note - This reflect digital level of the line.
+         * @note For inputs this is the electrical level; use read()/get() for logical state.
          */
         int value(void);
 
         /**
-         * @brief Read current logical state (hardware read + polarity applied).
-         * @return true if pressed, false if not pressed.
+         * @brief Read current LOGICAL state (hardware read + polarity applied).
+         * @return true if pressed (logically active), false otherwise.
          */
         bool read(void);
 
         /**
-         * @brief Get the last cached logical state (no hardware access).
+         * @brief Get the last cached LOGICAL state (no hardware access).
          * @return true if last known state was pressed, false otherwise.
          */
         bool get(void);
@@ -146,12 +148,12 @@ class Button
 
 /**
  * @class ResetButton
- * @brief Special button with reboot/shutdown semantics.
+ * @brief Button with reboot/shutdown behavior based on hold time.
  *
  * Behavior:
- * - If pressed → begins countdown.
- * - If still pressed after countdown → shutdown system.
- * - If released before countdown ends → reboot system.
+ *  - If pressed: start a 3..2..1 countdown.
+ *  - If still pressed after countdown: shutdown system.
+ *  - If released before countdown ends: reboot system.
  */
 class ResetButton : public Button
 {
