@@ -22,7 +22,7 @@ bool Button::begin()
     return true;
 }
 
-bool Button::beginInterrupt(uint8_t edge = 0, uint32_t debounce_us = 5000, GpioCallback cb = nullptr)
+bool Button::beginInterrupt(uint8_t edge, uint32_t debounce_us, GpioCallback cb)
 {
     if (!cb) {
         errorMessage = "Button: callback is null.";
@@ -35,27 +35,34 @@ bool Button::beginInterrupt(uint8_t edge = 0, uint32_t debounce_us = 5000, GpioC
         return false;
     }
 
-    AUXI::Edge _edge;
+    AUXI::Edge sel;
+    switch (edge) {
+        case 0:  sel = AUXI::Edge::Both;    break;
+        case 1:  sel = AUXI::Edge::Rising;  break;
+        case 2:  sel = AUXI::Edge::Falling; break;
+        default:
+            errorMessage = "edge selection is not correct (must be 0,1,2).";
+            return false;
+    }
 
-    if(edge == 0)
-    {
-        _edge = AUXI::Edge::Both;
-    }
-    else if(edge == 1)
-    {
-        _edge = AUXI::Edge::Rising;
-    }
-    else if(edge == 2)
-    {
-        _edge = AUXI::Edge::Falling;   
-    }
-    else
-    {
-        errorMessage = "edge selection is not correct.";
+    if (!_auxi.beginInterrupt(sel, debounce_us, cb)) {
+        errorMessage = "AUXI beginInterrupt() failed: " + _auxi.errorMessage;
         return false;
     }
+    return true;
+}
 
-    if (!_auxi.beginInterrupt(_edge, debounce_us, cb)) {
+bool Button::beginInterrupt(AUXI::Edge edge, uint32_t debounce_us, GpioCallback cb)
+{
+    if (!cb) {
+        errorMessage = "Button: callback is null.";
+        return false;
+    }
+    if (!_auxi.begin()) {
+        errorMessage = "AUXI begin() failed: " + _auxi.errorMessage;
+        return false;
+    }
+    if (!_auxi.beginInterrupt(edge, debounce_us, cb)) {
         errorMessage = "AUXI beginInterrupt() failed: " + _auxi.errorMessage;
         return false;
     }

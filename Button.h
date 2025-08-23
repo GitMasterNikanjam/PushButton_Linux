@@ -1,16 +1,16 @@
 /**
  * @file Button.h
- * @brief High-level push-button wrapper classes built on top of AUXIO (AUXI).
+ * @brief High-level push-button wrapper built on AUXIO::AUXI (libgpiod v1.x).
  *
- * Provides a simple abstraction for reading buttons using the AUXI
- * GPIO input wrapper (libgpiod v1.x). Supports:
- * - Pull-up / pull-down / no-bias modes (legacy PUD convention)
- * - Active-high or active-low logic (auto derived from pull mode)
- * - Polling reads (`value()`, `state()`)
- * - Event-driven interrupts with software debounce and callback
+ * This wrapper provides:
+ *  - Simple configuration of a GPIO input line via AUXI
+ *  - Polarity control (mode: active-high/active-low)
+ *  - Bias control (bias: off / pull-down / pull-up)
+ *  - Polling reads: @ref value() (0/1), @ref read() (bool), @ref get() (cached bool)
+ *  - Event-driven interrupts with software debounce and a C-style callback
  *
- * Includes a specialized @ref ResetButton that triggers reboot or
- * shutdown depending on hold duration.
+ * A specialized @ref ResetButton is also provided that triggers reboot or shutdown
+ * depending on how long the button is held.
  */
 
 // ################################################################################
@@ -29,33 +29,32 @@
 // #################################################################################
 
 /**
- * @brief GPIO edge event callback signature.
+ * @brief GPIO edge event callback signature used by Button::beginInterrupt().
  *
- * Invoked by @ref beginInterrupt() when an edge event occurs.
- *
- * @param is_rising True for rising edge, false for falling edge.
- * @param sec       Kernel timestamp (seconds).
- * @param nsec      Kernel timestamp (nanoseconds).
+ * @param is_rising True for rising edge; false for falling edge.
+ * @param sec       Kernel timestamp seconds component.
+ * @param nsec      Kernel timestamp nanoseconds component.
  */
-using GpioCallback = void(*)(bool /*is_rising*/, long /*sec*/, long /*nsec*/);
+using GpioCallback = void(*)(bool is_rising, long sec, long nsec);
 
 // #################################################################################
 // Button class:
 
 /**
  * @class Button
- * @brief Wrapper for a push-button input line, built on AUXI.
+ * @brief Wrapper for a push-button input line (AUXI under the hood).
  *
- * Pull modes (PUD) follow the legacy convention:
- * - 0 = OFF   (no bias)
- * - 1 = DOWN  (pull-down bias)
- * - 2 = UP    (pull-up bias, default)
+ * **Polarity (`mode`)**
+ * - 1 = active-high  (raw=1 → logical true/pressed)
+ * - 0 = active-low   (raw=0 → logical true/pressed)
  *
- * Logic polarity is derived from the pull mode:
- * - PUD_UP   → active-low (pressed = raw=0)
- * - PUD_OFF / PUD_DOWN → active-high (pressed = raw=1)
+ * **Bias (`bias`)**
+ * - 0 = bias off
+ * - 1 = pull-down
+ * - 2 = pull-up
  *
- * This ensures @ref state() consistently returns 1 when pressed.
+ * The logical state exposed by @ref read() / @ref get() already applies polarity.
+ * Therefore, @ref value() returns 1 when the button is logically active (pressed), 0 otherwise.
  */
 class Button
 {
@@ -67,64 +66,79 @@ class Button
         std::string errorMessage;
         
         /**
-         * @brief Construct a button object.
+         * @brief Construct a button on a given chip/line with chosen polarity and bias.
          *
-         * @param gpiodChip_path GPIO chip device path (e.g. "/dev/gpiochip0").
-         * @param pin       GPIO line offset.
-         * @param pud      Pull mode: 0=OFF, 1=DOWN, 2=UP (default=0).
+         * @param gpiodChip_path Path to GPIO chip device (e.g., "/dev/gpiochip0").
+         * @param pin            GPIO line offset on that chip.
+         * @param mode           Polarity: 1=active-high (default), 0=active-low.
+         * @param bias           Bias: 0=off (default), 1=pull-down, 2=pull-up.
          */
-        Button(const char* gpiodChip_path, unsigned int pin, uint8_t mode = 1, uint8_t pud = 0);
+        Button(const char* gpiodChip_path, unsigned int pin, uint8_t mode = 1, uint8_t bias = 0);
 
         /**
-         * @brief Configure the GPIO as input with the requested bias.
-         * @return true on success, false on error (check @ref errorMessage).
+         * @brief Request the line as input with configured bias/polarity.
+         * @return true on success, false on failure (see @ref errorMessage).
          */
         bool begin(void);
 
         /**
-         * @brief Start edge-driven interrupts.
+         * @brief Start edge-driven interrupts (numeric edge selector).
          *
-         * Requests events from libgpiod and launches an internal thread to
-         * dispatch events to the user callback.
+         * Requests kernel edge events and launches AUXI’s internal poll thread
+         * with optional software debounce. The callback is invoked from that thread.
          *
-         * @param cb           Callback function pointer (cannot be null).
-         * @param edge         0:both edge, 1: rising, 2: falling
-         * @param debounce_us  Debounce filter in microseconds (default 5000).
-         * @return true on success, false on error (check @ref errorMessage).
+         * @param edge         0=Both edges, 1=Rising only, 2=Falling only.
+         * @param debounce_us  Debounce window in microseconds (default 5000).
+         * @param cb           C-style callback pointer (must not be null).
+         * @return true on success, false on error (see @ref errorMessage).
          */
         bool beginInterrupt(uint8_t edge = 0, uint32_t debounce_us = 5000, GpioCallback cb = nullptr);
 
         /**
-         * @brief Stop the interrupt thread (if active).
+         * @brief Start edge-driven interrupts (type-safe overload).
          *
-         * Safe to call multiple times.
+         * @param edge         Edge selection (AUXI::Edge::Both/Rising/Falling).
+         * @param debounce_us  Debounce window in microseconds.
+         * @param cb           C-style callback pointer (must not be null).
+         * @return true on success, false on error (see @ref errorMessage).
+         */
+        bool beginInterrupt(AUXI::Edge edge, uint32_t debounce_us, GpioCallback cb);
+
+        /**
+         * @brief Stop AUXI’s internal event thread (no-op if not running).
          */
         void stopInterrupt();
 
         /**
-         * @brief Release resources (line and chip).
+         * @brief Release the GPIO line/chip resources (safe to call multiple times).
          *
-         * Calls @ref stopInterrupt() first, then AUXI::clean().
-         * Safe to call multiple times.
+         * Calls @ref stopInterrupt() and then AUXI::clean().
          */
         void clean(void);
 
-        // Read digital input level.
+        /**
+         * @brief Return the current sampled value of the line.
+         *
+         * @return 1 if high, 0 if low, or -1 on error.
+         * @note - This reflect digital level of the line.
+         */
         int value(void);
 
         /**
-         * @brief Alias for "pressed" state.
-         *  
-         * Equivalent to @ref value(). Returns 1 if pressed, 0 otherwise.
+         * @brief Read current logical state (hardware read + polarity applied).
+         * @return true if pressed, false if not pressed.
          */
         bool read(void);
 
-        // get last state of button. true if pressed, false if not pressed.
+        /**
+         * @brief Get the last cached logical state (no hardware access).
+         * @return true if last known state was pressed, false otherwise.
+         */
         bool get(void);
 
     protected:
 
-        AUXI        _auxi;          ///< Underlying AUXI instance
+        AUXI        _auxi;          ///< Underlying AUXI instance (configured via constructor)
 };
 
 // ################################################################################
