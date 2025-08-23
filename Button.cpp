@@ -4,102 +4,104 @@
 
 #include "Button.h"
 #include <cstdlib>
+#include <iostream>
+
+// #######################################################################
+// Helpers to map PUD to AUXI bias and polarity
+
+static inline uint8_t pud_to_bias(uint8_t pud) {
+    // PUD_OFF:0, PUD_DOWN:1, PUD_UP:2  →  AUXI bias: 0/1/2
+    if (pud == 1) return 1;        // pulldown
+    if (pud == 2) return 2;        // pullup
+    return 0;                      // off
+}
+
+static inline uint8_t pud_to_mode(uint8_t pud) {
+    // Choose polarity based on wiring convention:
+    // - With pull-up, button to GND → active-low (pressed when raw=0)
+    // - Otherwise, assume active-high.
+    return (pud == 2) ? 0 : 1;     // 0=active-low, 1=active-high
+}
 
 // #######################################################################
 // Button class:
 
-// Map legacy PUD values (0=OFF,1=DOWN,2=UP) to AUXI bias enum.
-// Adjust names if your AUXIO exposes different identifiers.
-static AUXI::Bias toAuxiBias(uint8_t pud) 
-{
-    switch (pud) 
-    {
-        case 1: return AUXI::Bias::PullDown;
-        case 2: return AUXI::Bias::PullUp;
-        default: return AUXI::Bias::Disabled;
-    }
-}
+Button::Button(const char* chipPath, unsigned pin, uint8_t pud)
+: _chipPath(chipPath),
+  _pin(pin),
+  _pud(pud),
+  _mode(pud_to_mode(pud)),
+  _bias(pud_to_bias(pud)),
+  _auxi(chipPath, pin, /*mode=*/_mode, /*bias=*/_bias)
+{}
 
-Button::Button(uint8_t pin, uint8_t pud)
-: _pin(pin), _pud(pud), _auxi(pin) {}
-
-bool Button::begin(void)
+bool Button::begin()
 {
-    if(_pin > 30)
-    {
-        errorMessage = "Error Button object: pin configuration is in wrong range.";
+    if (!_auxi.begin()) {
+        errorMessage = "AUXI begin() failed: " + _auxi.errorMessage;
         return false;
     }
-
-    // Configure as input with bias via AUXI
-    if (!_auxi.beginInput(toAuxiBias(_pud))) { // <-- implement in AUXIO
-    errorMessage = "AUXI beginInput() failed.";
-    return false;
-    }
     _irqActive.store(false);
-
     return true;
 }
 
-bool Button::beginInterrupt(GpioCallback cb, bool both_edges, uint32_t debounce_us) 
+bool Button::beginInterrupt(GpioCallback cb, bool both_edges, uint32_t debounce_us)
 {
-    if (!cb) 
-    {
-        errorMessage = "Callback is null.";
+    if (!cb) {
+        errorMessage = "Button: callback is null.";
         return false;
     }
 
-    if (!_auxi.beginInput(toAuxiBias(_pud))) 
-    { // ensure configured
-        errorMessage = "AUXI beginInput() failed.";
+    // Ensure line is requested as input
+    if (!_auxi.begin()) {
+        errorMessage = "AUXI begin() failed: " + _auxi.errorMessage;
         return false;
     }
 
-    AUXI::Edge edge = both_edges ? AUXI::Edge::Both : AUXI::Edge::Rising;
-    if (!_auxi.beginInterrupt(edge, cb, debounce_us)) 
-    { // <-- implement in AUXIO
-        errorMessage = "AUXI beginInterrupt() failed.";
+    const auto edge = both_edges ? AUXI::Edge::Both : AUXI::Edge::Rising;
+    if (!_auxi.beginInterrupt(edge, debounce_us, cb)) {
+        errorMessage = "AUXI beginInterrupt() failed: " + _auxi.errorMessage;
         return false;
     }
     _irqActive.store(true);
     return true;
 }
 
-void Button::clean() 
+void Button::stopInterrupt()
 {
-    if (_irqActive.load()) 
-    {
-        _auxi.endInterrupt(); // <-- implement in AUXIO (optional)
-        _irqActive.store(false);
+    if (_irqActive.exchange(false)) {
+        _auxi.stopInterrupt();
     }
-    _auxi.end(); // release line (return to default/floating per kernel bias)
 }
 
-uint8_t Button::value() 
+void Button::clean()
 {
-    int v = _auxi.read(); // <-- implement in AUXIO: return 0/1
-    return static_cast<uint8_t>(v & 1);
+    stopInterrupt();
+    _auxi.clean();
 }
 
-uint8_t Button::state() 
+uint8_t Button::value()
 {
-    const uint8_t val = value();
-    if (_pud == 2 /*pull-up*/) 
-    {
-        return val == 0 ? 1 : 0; // active-low when pull-up
-    }
-    return val; // active-high otherwise
+    // AUXI::read() returns logical (after polarity). Treat true as 1.
+    const bool v = _auxi.read();
+    return static_cast<uint8_t>(v ? 1 : 0);
 }
 
+uint8_t Button::state()
+{
+    // "Pressed" is simply the logical active state chosen by _mode.
+    return value();
+}
 
 // ####################################################################
 // ResetButton class:
 
-bool ResetButton::check() 
+bool ResetButton::check()
 {
     if (!state()) return false;
 
     using namespace std::chrono_literals;
+
     std::cout << "System is Resetting ... !\n";
     std::this_thread::sleep_for(1s);
     std::cout << "3 Sec\n";
@@ -109,11 +111,9 @@ bool ResetButton::check()
     std::cout << "1 Sec\n";
     std::this_thread::sleep_for(1s);
 
-    if (state()) 
-    {
+    if (state()) {
         std::cout << "System is Shutdown ... !\n";
         std::this_thread::sleep_for(1s);
-        // Prefer full path to be explicit; adjust to your distro if needed.
         std::system("sudo /sbin/shutdown -h now");
         for (;;) std::this_thread::sleep_for(1s);
     }
@@ -121,6 +121,7 @@ bool ResetButton::check()
     std::system("sudo /sbin/reboot");
     for (;;) std::this_thread::sleep_for(1s);
 
+    // Unreachable
     return false;
 }
 

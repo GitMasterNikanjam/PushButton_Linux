@@ -3,31 +3,35 @@
 // #################################################################################
 // Include libraries:
 
-#include "../AUXIO_Linux/AUXIO.h"    // <- Your AUXIO input wrapper (AUXI)
+#include "../AUXIO_Linux/AUXIO.h"      // uses AUXI from your latest AUXIO library
 #include <cstdint>
 #include <string>
 #include <atomic>
 #include <thread>
 #include <chrono>
-#include <functional>
-
-using namespace std;
 
 // #################################################################################
 
 // Callback signature: (is_rising, seconds, nanoseconds)
-using GpioCallback = void(*)(bool, long, long);
+using GpioCallback = void(*)(bool /*is_rising*/, long /*sec*/, long /*nsec*/);
 
 // #################################################################################
 // Button class:
 
 /**
-* @brief Simple button wrapper on top of AUXIO (AUXI input with optional interrupts).
-*
-* API kept close to the original Button class, but internally uses AUXI.
-* - Pull modes use the same numeric convention as before: OFF=0, DOWN=1, UP=2.
-* - beginInterrupt() is added for edge-driven behavior with optional debounce.
-*/
+ * @brief Simple push-button wrapper on top of AUXI (GPIO input with optional interrupts).
+ *
+ * Pull modes (PUD) follow the legacy convention:
+ * - 0 = OFF  (no bias)
+ * - 1 = DOWN (pull-down)
+ * - 2 = UP   (pull-up)  ← default and most common for buttons to ground
+ *
+ * Polarity is auto-derived from pull mode:
+ * - PUD_UP   → active-low (pressed when raw=0)
+ * - PUD_OFF/DOWN → active-high (pressed when raw=1)
+ *
+ * With this mapping, @ref state() returns 1 when the button is pressed.
+ */
 class Button
 {
     public:
@@ -35,71 +39,73 @@ class Button
         std::string errorMessage;
         
         /**
-        * @param pin GPIO line offset (per your platform's mapping)
-        * @param pud Pull mode: 0=OFF, 1=DOWN, 2=UP
-        */
-        Button(uint8_t pin, uint8_t pud);
+         * @param chipPath  GPIO chip device path (e.g. "/dev/gpiochip0")
+         * @param pin       GPIO line offset
+         * @param pud       0=OFF, 1=DOWN, 2=UP (default=2)
+         */
+        Button(const char* chipPath, unsigned pin, uint8_t pud = 2);
 
-        /**
-        * @brief Configure the GPIO as input with bias via AUXI. No interrupts.
-        * @return true on success, false on error (check errorMessage)
-        */
+        /** Configure the GPIO as input with proper bias (no interrupts). */
         bool begin(void);
 
         /**
-        * @brief Start edge-driven interrupts (rising+falling by default).
-        * @param cb C-style callback (no lambda required)
-        * @param both_edges true=rising+falling, false=rising-only
-        * @param debounce_us debounce time in microseconds (0 to disable)
-        * @return true on success
-        */
-        bool beginInterrupt(GpioCallback cb, bool both_edges=true, uint32_t debounce_us=5000);
+         * Start edge-driven interrupts.
+         * @param cb            C-style callback (cannot be null)
+         * @param both_edges    true: rising+falling, false: rising-only
+         * @param debounce_us   software debounce window in microseconds
+         */
+        bool beginInterrupt(GpioCallback cb, bool both_edges = true, uint32_t debounce_us = 5000);
 
-        /** Stop interrupts (if started) and release resources. */
+        /** Stop interrupts (if running). */
+        void stopInterrupt();
+
+        /** Release resources (line/chip). Safe to call multiple times. */
         void clean(void);
 
-        /** @return raw logic level from the line (0/1). */
+        /**
+         * Read current logical value (after polarity):
+         * returns 1 when *active* (i.e., "pressed") based on chosen polarity.
+         */
         uint8_t value(void);
 
         /**
-        * @brief Button pressed state considering pull mode.
-        * If pull-up is used (2), pressed = level==0.
-        * Otherwise, pressed = level.
-        */
+         * Alias for "pressed" state. Returns 1 when pressed, 0 otherwise.
+         * Equivalent to @ref value().
+         */
         uint8_t state(void);
 
     protected:
 
-        // GPIO pin number
-        uint8_t _pin;
-        
-        // Pullup/Pulldown mode. PUD_OFF:0, PUD_DOWN:1, PUD_UP:2 
-        uint8_t _pud;
+        const char* _chipPath;
+        unsigned    _pin;
+        uint8_t     _pud;
 
-        // Backing AUXI input object (from AUXIO library)
-        AUXI _auxi; // constructed with pin; see source for details
+        // Derived config for AUXI
+        uint8_t     _mode;   // 0=active-low, 1=active-high (derived from _pud)
+        uint8_t     _bias;   // 0=off, 1=pulldown, 2=pullup (direct from _pud)
 
-        // Track whether interrupt mode is active
-        std::atomic<bool> _irqActive {false};
-
-        // // Duration time that user pressed button. [us]
-        // uint64_t _pressedDur;
-
-        // uint64_t _T;
+        AUXI        _auxi;
+        std::atomic<bool> _irqActive{false};
 };
 
 // ################################################################################
 // ResetButton class:
 
 /**
-* @brief Specialized button that triggers reboot/shutdown after a press/hold.
-* Behavior preserved from original code but implemented without bcm delays.
-*/
+ * @brief Button that triggers reboot, and if held through a countdown, shutdown.
+ *
+ * Behavior:
+ * - If pressed → start 3..2..1 countdown.
+ * - If still pressed at the end → shutdown.
+ * - Otherwise → reboot.
+ *
+ * (Adjust to your policy as needed.)
+ */
 class ResetButton : public Button
 {
     public:
 
-        using Button::Button; // inherit constructor
+        using Button::Button; // inherit constructors
 
         /**
         * @brief If pressed, perform reboot; if still pressed after countdown, shutdown.
