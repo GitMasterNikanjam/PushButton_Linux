@@ -7,32 +7,10 @@
 #include <iostream>
 
 // #######################################################################
-// Helpers to map PUD to AUXI bias and polarity
-
-static inline uint8_t pud_to_bias(uint8_t pud) {
-    // PUD_OFF:0, PUD_DOWN:1, PUD_UP:2  →  AUXI bias: 0/1/2
-    if (pud == 1) return 1;        // pulldown
-    if (pud == 2) return 2;        // pullup
-    return 0;                      // off
-}
-
-static inline uint8_t pud_to_mode(uint8_t pud) {
-    // Choose polarity based on wiring convention:
-    // - With pull-up, button to GND → active-low (pressed when raw=0)
-    // - Otherwise, assume active-high.
-    return (pud == 2) ? 0 : 1;     // 0=active-low, 1=active-high
-}
-
-// #######################################################################
 // Button class:
 
-Button::Button(const char* chipPath, unsigned pin, uint8_t pud)
-: _chipPath(chipPath),
-  _pin(pin),
-  _pud(pud),
-  _mode(pud_to_mode(pud)),
-  _bias(pud_to_bias(pud)),
-  _auxi(chipPath, pin, /*mode=*/_mode, /*bias=*/_bias)
+Button::Button(const char* gpiodChip_path, unsigned int pin, uint8_t mode, uint8_t bias)
+: _auxi(gpiodChip_path, pin, mode, bias)
 {}
 
 bool Button::begin()
@@ -41,11 +19,10 @@ bool Button::begin()
         errorMessage = "AUXI begin() failed: " + _auxi.errorMessage;
         return false;
     }
-    _irqActive.store(false);
     return true;
 }
 
-bool Button::beginInterrupt(GpioCallback cb, bool both_edges, uint32_t debounce_us)
+bool Button::beginInterrupt(uint8_t edge = 0, uint32_t debounce_us = 5000, GpioCallback cb = nullptr)
 {
     if (!cb) {
         errorMessage = "Button: callback is null.";
@@ -58,20 +35,36 @@ bool Button::beginInterrupt(GpioCallback cb, bool both_edges, uint32_t debounce_
         return false;
     }
 
-    const auto edge = both_edges ? AUXI::Edge::Both : AUXI::Edge::Rising;
-    if (!_auxi.beginInterrupt(edge, debounce_us, cb)) {
+    AUXI::Edge _edge;
+
+    if(edge == 0)
+    {
+        _edge = AUXI::Edge::Both;
+    }
+    else if(edge == 1)
+    {
+        _edge = AUXI::Edge::Rising;
+    }
+    else if(edge == 2)
+    {
+        _edge = AUXI::Edge::Falling;   
+    }
+    else
+    {
+        errorMessage = "edge selection is not correct.";
+        return false;
+    }
+
+    if (!_auxi.beginInterrupt(_edge, debounce_us, cb)) {
         errorMessage = "AUXI beginInterrupt() failed: " + _auxi.errorMessage;
         return false;
     }
-    _irqActive.store(true);
     return true;
 }
 
 void Button::stopInterrupt()
 {
-    if (_irqActive.exchange(false)) {
-        _auxi.stopInterrupt();
-    }
+    _auxi.stopInterrupt();
 }
 
 void Button::clean()
@@ -80,17 +73,19 @@ void Button::clean()
     _auxi.clean();
 }
 
-uint8_t Button::value()
+int Button::value()
 {
-    // AUXI::read() returns logical (after polarity). Treat true as 1.
-    const bool v = _auxi.read();
-    return static_cast<uint8_t>(v ? 1 : 0);
+    return _auxi.value();
 }
 
-uint8_t Button::state()
+bool Button::read(void)
 {
-    // "Pressed" is simply the logical active state chosen by _mode.
-    return value();
+    return _auxi.read();
+}
+
+bool Button::get(void)
+{
+    return _auxi.get();
 }
 
 // ####################################################################
@@ -98,7 +93,7 @@ uint8_t Button::state()
 
 bool ResetButton::check()
 {
-    if (!state()) return false;
+    if (!read()) return false;
 
     using namespace std::chrono_literals;
 
@@ -111,7 +106,7 @@ bool ResetButton::check()
     std::cout << "1 Sec\n";
     std::this_thread::sleep_for(1s);
 
-    if (state()) {
+    if (read()) {
         std::cout << "System is Shutdown ... !\n";
         std::this_thread::sleep_for(1s);
         std::system("sudo /sbin/shutdown -h now");
